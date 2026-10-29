@@ -130,6 +130,35 @@ the user's home. The real artifact dir is **`ci-artifacts`** (org secret
 `round-trip DEGRADED` (it's a path error, not a daemon problem). Always export
 the real `NAS_DEST`.
 
+### The CI credentials: `RCLONE_CONF_B64`
+
+The org secret **`RCLONE_CONF_B64`** (visibility: all repos) is the base64 of a
+whole `rclone.conf` with one remote, **`[asd-artifacts-nas]`**: `type = sftp`,
+the NAS host, `port = 4589`, `user = asd-cicd` and its SSH key. artifact-nas
+auto-detects the remote from the first `[section]`. It takes precedence over
+`NAS_HOST`/`NAS_USER`/`NAS_PASS`/`NAS_PORT`, which are also set as org
+secrets but are a fallback only.
+
+- **Make or rotate it** from a local `.rclone/rclone.conf` (gitignored):
+  `just rclone-nas-secret-conf` (= `base64 -w0 .rclone/rclone.conf | gh secret
+  set RCLONE_CONF_B64 --org viaalink --visibility all`). The secret can be
+  written but never read back, so keep the source conf (and the asd-cicd key)
+  somewhere safe: as of 2026-10-23 it is not on dev2.
+- **The host in it is the public IP.** Every self-hosted runner sits on the
+  NAS's LAN, so its connections go out and back in through the router's
+  hairpin NAT. Measured 2026-10-23: 20 parallel handshakes to :4589 over the
+  public IP 0/20 ok, over the LAN address 16/20 (stock MaxStartups) — a
+  release run's fan-out fails its NAS legs. viaalink/cli-src therefore sets the
+  repo variable **`NAS_LAN_HOST`**; its NAS wrappers rewrite the conf's `host`
+  to that address at run time (masked, never printed) and leave the secret as
+  is. Another repo can do the same, or keep the public host if its runners
+  are not on the LAN.
+
+> **Config reset, 2026-10-22 18:48:** `sshd_config_sftp` was back to stock (no
+> `MaxStartups`/`LoginGraceTime`); the watchdog survived. Re-run
+> `sudo sh fix-sftp-cicd.sh` after any firmware update, ADM restart or
+> Defender change, and check with `--check`.
+
 ---
 
 ## 4. Verification & monitoring
