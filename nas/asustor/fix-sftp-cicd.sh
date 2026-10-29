@@ -161,7 +161,14 @@ for f in "$RUNTIME" "$DEFAULTS"; do
   [ "$MODE" = apply ] && backup_once "$f"
   set_directive "$f" MaxStartups        "200:30:1000"
   set_directive "$f" MaxSessions        "100"
-  set_directive "$f" PerSourceMaxStartups "100"
+  # none, not a number: every self-hosted runner on dev2 shares one source IP,
+  # and the per-source count leaks on this build. After a release burst
+  # (2026-10-27 and 2026-10-29) the listener showed "0 of 200-1000 startups"
+  # yet refused every connection from that IP with "Not allowed at this time"
+  # ("drop connection #0 ... past Maxstartups") for hours. The watchdog
+  # probes from 127.0.0.1, a different source, so it never noticed.
+  # MaxStartups above still caps the total.
+  set_directive "$f" PerSourceMaxStartups "none"
   set_directive "$f" PerSourcePenalties "no"
   set_directive "$f" LoginGraceTime     "20"
   # NB: deliberately NOT touching PrintLastLog — patch-seccomp.py already
