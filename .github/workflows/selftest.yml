@@ -54,6 +54,14 @@ jobs:
           path: restored
           mode: nas-only
 
+      - name: Download again (./download, nas-first)
+        # Up to v1.4.8 nas-first read GitHub only and failed here.
+        uses: ./download
+        with:
+          name: selftest-roundtrip
+          path: restored-nas-first
+          mode: nas-first
+
       - name: Verify round-trip
         run: |
           test -f restored/probe.txt || { echo "::error::restored/probe.txt missing"; exit 1; }
@@ -61,4 +69,5 @@ jobs:
           want="$(cat tmp/probe.sha256)"
           echo "want=$want got=$got"
           [ "$got" = "$want" ] || { echo "::error::checksum mismatch after round-trip"; exit 1; }
+          cmp restored/probe.txt restored-nas-first/probe.txt || { echo "::error::nas-first download differs"; exit 1; }
           echo "✅ round-trip OK"
