@@ -25,6 +25,9 @@ inputs:
     description: >-
       fallback = GitHub first, NAS only if the GitHub artifact is missing (default).
       nas-only = skip GitHub, fetch from NAS only.
+      nas-first = NAS first; GitHub only if the NAS download fails. Pair
+                 with `mode: nas-first` on the upload action, which stores on
+                 the NAS and touches GitHub only when the NAS failed.
       cache    = NAS-only at a stable cross-run path
                  (<nas-dest>/cache/<name>/, no owner/repo/run/attempt
                  scoping). Cache miss (no files at that path) exits 0
@@ -75,17 +78,22 @@ runs:
     - name: Download from GitHub Actions artifacts
       id: gh
       # `cache` mode skips GitHub entirely (per-run GH artifacts don't fit
-      # a cache contract — see upload action's mode docs).
-      if: ${{ inputs.mode != 'nas-only' && inputs.mode != 'cache' }}
+      # a cache contract — see upload action's mode docs). `nas-first` asks
+      # GitHub only after the NAS step, in the last step below.
+      if: ${{ inputs.mode != 'nas-only' && inputs.mode != 'cache' && inputs.mode != 'nas-first' }}
       continue-on-error: true
       uses: actions/download-artifact@v4
       with:
         name: ${{ inputs.name }}
         path: ${{ inputs.path }}
 
-    - name: Download from NAS (rclone SFTP fallback)
+    - name: Download from NAS (rclone SFTP)
+      id: nas
+      # Until v1.4.8 `nas-first` was not listed here: the upload side stored
+      # on the NAS only, and this side read GitHub only, so every nas-first
+      # download failed with "artifact not found".
       if: >-
-        ${{ inputs.mode == 'nas-only' || inputs.mode == 'cache' ||
+        ${{ inputs.mode == 'nas-only' || inputs.mode == 'cache' || inputs.mode == 'nas-first' ||
             (inputs.mode == 'fallback' && steps.gh.outcome == 'failure') }}
       shell: bash
       # Inputs come in as IN_* so they don't clobber the ambient NAS_*/
@@ -115,6 +123,27 @@ runs:
         NAS_DEST="${IN_DEST:-${NAS_DEST:-/artifacts}}"
         DEST_PATH="${DEST_PATH:-.}"
 
+        # One exit trap for the whole step: clean up the conf, report `ok`,
+        # and in nas-first turn a failure into exit 0 so the GitHub step
+        # after this one can take over. A composite step cannot compute
+        # `continue-on-error`, hence the trap.
+        CLEANUP_CONF=""
+        finish() {
+          local rc=$?
+          [ -n "${CLEANUP_CONF}" ] && rm -f "${CLEANUP_CONF}"
+          if [ "${rc}" -eq 0 ]; then
+            echo "ok=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "ok=false" >> "${GITHUB_OUTPUT}"
+          if [ "${MODE}" = "nas-first" ]; then
+            echo "::warning::NAS download of '${ART_NAME}' failed (exit ${rc}) — falling back to GitHub."
+            exit 0
+          fi
+          exit "${rc}"
+        }
+        trap finish EXIT
+
         if [ "${MODE}" = "fallback" ]; then
           echo "::warning::GitHub artifact '${ART_NAME}' not found — falling back to NAS."
         fi
@@ -143,7 +172,6 @@ runs:
 
         # --- resolve remote: conf-b64 (file) takes precedence over user/pass ---
         REMOTE=""
-        CLEANUP_CONF=""
         if [ -n "${NAS_CONF_B64}" ]; then
           CONF_FILE="$(mktemp)"
           CLEANUP_CONF="${CONF_FILE}"
@@ -176,9 +204,6 @@ runs:
           echo "::error::No NAS credentials. Provide nas-host/nas-user/nas-pass OR nas-conf-b64." >&2
           exit 1
         fi
-
-        cleanup() { [ -n "${CLEANUP_CONF}" ] && rm -f "${CLEANUP_CONF}" || true; }
-        trap cleanup EXIT
 
         # --- source ---
         # Standard (fallback/nas-only): mirror upload's per-run layout
@@ -441,3 +466,10 @@ runs:
           exit 1
         fi
         echo "✅ Artifact '${ART_NAME}' downloaded from NAS -> ${ITEMS[*]}"
+
+    - name: Download from GitHub Actions artifacts (nas-first fallback)
+      if: ${{ inputs.mode == 'nas-first' && steps.nas.outputs.ok != 'true' }}
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
